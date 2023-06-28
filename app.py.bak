@@ -1,0 +1,47 @@
+from flask import Flask, render_template, request, redirect, url_for, flash
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
+import os
+
+
+app = Flask(__name__)
+basedir = os.path.abspath(os.path.dirname(__file__))
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'cases.db')app.config['SECRET_KEY'] = "your_secret_key"
+db = SQLAlchemy(app)
+
+class Case(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    case_number = db.Column(db.String(100))
+    description = db.Column(db.String(5000))
+    solution = db.Column(db.String(5000))
+    date_created = db.Column(db.DateTime, default=datetime.utcnow)
+
+# This will create the tables if they do not exist
+with app.app_context():
+    db.create_all()
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        case_number = request.form.get('case_number')
+        description = request.form.get('description')
+        solution = request.form.get('solution')
+        case = Case(case_number=case_number, description=description, solution=solution)
+        db.session.add(case)
+        db.session.commit()
+        flash("Case added successfully!", "success")
+        return redirect(url_for('index'))
+    cases = Case.query.order_by(Case.date_created).all()
+    return render_template('index.html', cases=cases)
+
+@app.route('/delete/<int:id>')
+def delete(id):
+    case = Case.query.get(id)
+    if case:
+        db.session.delete(case)
+        db.session.commit()
+        flash("Case deleted successfully!", "success")
+    return redirect(url_for('index'))
+
+if __name__ == "__main__":
+    app.run(debug=True)
