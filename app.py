@@ -2,6 +2,45 @@ from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import os
+import sqlite3
+import sys
+
+from langchain.chains import ConversationalRetrievalChain
+from langchain.chat_models import ChatOpenAI
+from langchain.indexes import VectorstoreIndexCreator
+from langchain.indexes.vectorstore import VectorStoreIndexWrapper
+from langchain.vectorstores import Chroma
+
+import constants
+
+os.environ["OPENAI_API_KEY"] = constants.APIKEY
+
+# Enable to save to disk & reuse the model (for repeated queries on the same data)
+PERSIST = False
+
+class SQLiteLoader:
+    def __init__(self, db_path, table_name):
+        self.db_path = db_path
+        self.table_name = table_name
+
+    def load(self):
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute(f"SELECT * FROM [case]")
+        rows = cur.fetchall()
+        conn.close()
+
+        # Format the rows in a way that language model can understand
+        documents = [self.format_row(row) for row in rows]
+
+        return documents
+
+    def format_row(self, row):
+        # Create a document object with a page_content and metadata attribute
+        document = type('', (), {})()
+        document.page_content = ' '.join(map(str, row))
+        document.metadata = {}  # or whatever metadata you want to assign
+        return document
 
 app = Flask(__name__)
 
@@ -36,6 +75,31 @@ def index():
         return redirect(url_for('index'))
     cases = Case.query.order_by(Case.date_created).all()
     return render_template('index.html', cases=cases)
+
+@app.route('/chat', methods=['GET', 'POST'])
+def chat():
+    if request.method == 'POST':
+        message = request.form.get('message')
+        if PERSIST and os.path.exists("persist"):
+            vectorstore = Chroma(persist_directory="persist", embedding_function=OpenAIEmbeddings())
+            index = VectorStoreIndexWrapper(vectorstore=vectorstore)
+        else:
+            loader = SQLiteLoader('cases.db', 'case')
+            if PERSIST:
+                index = VectorstoreIndexCreator(vectorstore_kwargs={"persist_directory":"persist"}).from_loaders([loader])
+            else:
+                index = VectorstoreIndexCreator().from_loaders([loader])
+        chain = ConversationalRetrievalChain.from_llm(
+            llm=ChatOpenAI(model="gpt-3.5-turbo"),
+            retriever=index.vectorstore.as_retriever(search_kwargs={"k": 1}),
+        )
+
+        chat_history = []
+        result = chain({"question": message, "chat_history": chat_history})
+        response = result['answer']
+
+        return render_template('chat.html', response=response)
+    return render_template('chat.html')
 
 @app.route('/delete/<int:id>')
 def delete(id):
